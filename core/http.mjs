@@ -18,13 +18,16 @@ export function cleanHeaders(input = {}) {
   return headers;
 }
 
-export async function request(url, { method = 'GET', headers = {}, signal, redirects = 0 } = {}) {
+export async function request(url, { method = 'GET', headers = {}, signal, redirects = 0, timeoutMs = 30000 } = {}) {
   url = validUrl(url);
   if (redirects > 10) throw new Error('Too many redirects.');
   const response = await new Promise((resolve, reject) => {
-    const req = (url.startsWith('https:') ? https : http).request(url, { method, headers, signal }, resolve);
+    const req = (url.startsWith('https:') ? https : http).request(url, { method, headers, signal }, res => {
+      res.setTimeout(timeoutMs, () => res.destroy(new Error('Connection timed out.')));
+      resolve(res);
+    });
     req.on('error', reject);
-    req.setTimeout(30000, () => req.destroy(new Error('Connection timed out.')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('Connection timed out.')));
     req.end();
   });
   if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
@@ -39,7 +42,7 @@ export async function request(url, { method = 'GET', headers = {}, signal, redir
       // disclose the originating page to a different origin during redirects.
       delete forwarded.referer;
     }
-    return request(target, { method, headers: forwarded, signal, redirects: redirects + 1 });
+    return request(target, { method: response.statusCode === 303 && method !== 'HEAD' ? 'GET' : method, headers: forwarded, signal, redirects: redirects + 1, timeoutMs });
   }
   response.finalUrl = url;
   return response;
@@ -62,8 +65,8 @@ export async function probe(url, headers, signal) {
   const info = { status: response.statusCode, headers: response.headers, url: response.finalUrl };
   response.destroy();
   if (info.status < 200 || info.status >= 300) throw new Error(`Server returned HTTP ${info.status}.`);
-  const range = /^bytes \d+-\d+\/(\d+)$/.exec(info.headers['content-range'] || '');
-  const total = range ? Number(range[1]) : Number(info.headers['content-length']);
+  const range = /^bytes \d+-\d+\/(\d+|\*)$/i.exec(info.headers['content-range'] || '');
+  const total = range ? (range[1] === '*' ? NaN : Number(range[1])) : Number(info.headers['content-length']);
   return { ...info, total: Number.isSafeInteger(total) && total >= 0 ? total : null,
     ranges: info.headers['accept-ranges'] === 'bytes' || info.status === 206,
     validator: info.headers.etag && !info.headers.etag.startsWith('W/') ? info.headers.etag : info.headers['last-modified'] || null };
