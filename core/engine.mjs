@@ -294,7 +294,7 @@ export class DownloadEngine extends EventEmitter {
       for (const file of files) {
         const input = await fs.open(file, 'r');
         try {
-          for await (const chunk of input.createReadStream()) { signal.throwIfAborted(); await out.writeFile(chunk); }
+          for await (const chunk of input.createReadStream({ autoClose: false })) { signal.throwIfAborted(); await out.writeFile(chunk); }
         } finally { await input.close(); }
       }
       await out.sync(); complete = true;
@@ -339,18 +339,18 @@ export class DownloadEngine extends EventEmitter {
         const temp = path.join(dir, `${i}.receiving`);
         for (let attempt = 0; attempt < 4; attempt++) {
           d.downloaded -= segment.downloaded; segment.downloaded = 0;
-          const out = await fs.open(temp, 'w'); let response;
+          const out = await fs.open(temp, 'w'); let response, closed = false;
           try {
             response = await request(segment.url, { headers: scopedHeaders(headers, plan.source, segment.url), signal: groupSignal });
             if (response.statusCode !== 200) throw new Error(`HLS segment returned HTTP ${response.statusCode}.`);
             const expected = Number(response.headers['content-length']);
             for await (const chunk of response) { groupSignal.throwIfAborted(); await this.throttle(chunk.length, groupSignal); await out.writeFile(chunk); segment.downloaded += chunk.length; d.downloaded += chunk.length; }
             if (Number.isFinite(expected) && expected !== segment.downloaded) throw new Error('Incomplete HLS segment.');
-            await out.sync(); await out.close();
+            await out.sync(); await out.close(); closed = true;
             await fs.rename(temp, path.join(dir, `${i}.part`)); segment.done = true;
             await this.persist(); break;
           } catch (error) {
-            await out.close();
+            if (!closed) await out.close();
             if (groupSignal.aborted || attempt === 3) throw error;
             await delay(250 * 2 ** attempt, undefined, { signal: groupSignal });
           } finally { response?.destroy(); }

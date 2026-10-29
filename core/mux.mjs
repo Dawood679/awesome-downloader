@@ -9,7 +9,7 @@ export async function muxTracks(directory, videoCount, count, signal) {
     try {
       for (let i=start;i<end;i++) {
         const input = await fs.open(path.join(directory, `${i}.part`), 'r');
-        try { for await (const chunk of input.createReadStream()) { signal.throwIfAborted(); await output.writeFile(chunk); } }
+        try { for await (const chunk of input.createReadStream({ autoClose: false })) { signal.throwIfAborted(); await output.writeFile(chunk); } }
         finally { await input.close(); }
       }
     } finally { await output.close(); }
@@ -28,7 +28,7 @@ export async function convertMedia(directory, files, format, signal) {
   if(!['mp4','mp3'].includes(format))throw new Error('Unsupported output format.');
   const source=path.join(directory,'conversion-source.track');
   const out=await fs.open(source,'w');
-  try {for(const file of files){const input=await fs.open(file,'r');try{for await(const chunk of input.createReadStream()){signal.throwIfAborted();await out.writeFile(chunk);}}finally{await input.close();}}}finally{await out.close();}
+  try {for(const file of files){const input=await fs.open(file,'r');try{for await(const chunk of input.createReadStream({ autoClose: false })){signal.throwIfAborted();await out.writeFile(chunk);}}finally{await input.close();}}}finally{await out.close();}
   const output=path.join(directory,'converted.'+format);
   await new Promise((resolve,reject)=>{
     const args=['-nostdin','-v','error','-y','-protocol_whitelist','file,pipe','-i',source];

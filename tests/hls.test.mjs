@@ -51,3 +51,32 @@ test('HLS VOD downloads in parallel, resumes completed segments, and assembles e
   assert.equal(d.status, 'complete', d.error); assert.equal(d.filename, 'master.ts');
   assert.deepEqual(await fs.readFile(d.path), Buffer.concat(pieces)); assert.equal(d.duration, 30);
 });
+test('HLS segment retry after post-close failure does not double-close the file handle', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'awesome-hls-close-test-'));
+  const server = http.createServer((req, res) => {
+    if (req.url === '/video.m3u8') return res.end('#EXTM3U\n#EXTINF:2,\n/0.ts\n#EXT-X-ENDLIST');
+    if (req.url === '/0.ts') { res.setHeader('content-length', '4'); return res.end('abcd'); }
+    res.writeHead(404); res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const engine = await new DownloadEngine({ dataDirectory: path.join(root, 'state'), downloadDirectory: path.join(root, 'out'), tickMs: 20 }).init();
+  t.after(async () => { await engine.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await fs.rm(root, { recursive: true, force: true }); });
+  let failedOnce = false;
+  const origPersist = engine.persist.bind(engine);
+  engine.persist = async function () {
+    const stack = new Error().stack || '';
+    if (!failedOnce && stack.includes('runHls') && engine.downloads[0]?.segments?.[0]?.done) {
+      failedOnce = true;
+      engine.downloads[0].segments[0].done = false;
+      throw new Error('simulated checkpoint failure after close');
+    }
+    return origPersist();
+  };
+  await engine.add({ url: `http://127.0.0.1:${server.address().port}/video.m3u8` });
+  const d = engine.downloads[0];
+  const end = Date.now() + 8000;
+  while (!['complete', 'error'].includes(d.status) && Date.now() < end) await delay(15);
+  assert.equal(failedOnce, true);
+  assert.equal(d.status, 'complete', d.error);
+  assert.equal(await fs.readFile(d.path, 'utf8'), 'abcd');
+});
